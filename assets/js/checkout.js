@@ -1,156 +1,310 @@
-jQuery(function($) {
+/**
+ * WooCommerce Payment Method Surcharge - Frontend JavaScript
+ * 
+ * Handles dynamic surcharge updates when payment method changes
+ * Supports both cart and checkout pages
+ * 
+ * @package WC_Payment_Surcharge
+ * @version 2.3.5
+ */
+
+(function($) {
     'use strict';
 
-    // Track if we're processing an express checkout
-    var isProcessingExpressCheckout = false;
+    /**
+     * Payment Surcharge Handler
+     */
+    var WCPaymentSurcharge = {
+        /**
+         * Initialize the handler
+         */
+        init: function() {
+            this.bindEvents();
+            this.initialCheck();
+        },
 
-    // Function to update surcharge
-    function updateSurcharge(paymentMethod, expressType = null) {
-        var $paymentMethodContainer = $('input[name="payment_method"][value="' + paymentMethod + '"]').closest('.wc_payment_method');
-        var ajaxData = {
-            action: 'get_payment_surcharge',
-            payment_method: paymentMethod,
-            nonce: wc_payment_surcharge_params.nonce,
-            is_initial_load: true
-        };
+        /**
+         * Bind event listeners
+         */
+        bindEvents: function() {
+            var self = this;
 
-        // Handle express checkout specifically
-        if (expressType) {
-            ajaxData.payment_request_type = expressType;
-            isProcessingExpressCheckout = true;
-            
-            // Find the express button container
-            $paymentMethodContainer = $('.stripe-' + expressType + '-button').closest('.wc_payment_method');
-            if (!$paymentMethodContainer.length) {
-                $paymentMethodContainer = $('.payment_method_stripe').first();
+            // When payment method changes on checkout
+            $(document).on('change', 'input[name="payment_method"]', function() {
+                self.updateSurcharge($(this).val());
+            });
+
+            // When cart is updated
+            $(document.body).on('updated_cart_totals', function() {
+                self.checkSurchargeStatus();
+            });
+
+            // When checkout is updated
+            $(document.body).on('updated_checkout', function() {
+                self.checkSurchargeStatus();
+            });
+
+            // When payment method is selected in cart (if applicable)
+            $(document).on('change', '.wc-payment-method-selector', function() {
+                self.updateSurcharge($(this).val());
+            });
+
+            // Handle express checkout buttons
+            $(document).on('click', '.wc-stripe-payment-request-button', function() {
+                // Store current payment method for express checkout
+                var paymentMethod = 'stripe_express';
+                self.storePaymentMethod(paymentMethod);
+            });
+
+            // Listen for checkout errors
+            $(document.body).on('checkout_error', function() {
+                self.handleCheckoutError();
+            });
+        },
+
+        /**
+         * Initial check for existing surcharge
+         */
+        initialCheck: function() {
+            var selectedPayment = $('input[name="payment_method"]:checked').val();
+            if (selectedPayment) {
+                this.updateSurcharge(selectedPayment);
             }
-        }
+        },
 
-        // Show loading state
-        $paymentMethodContainer.addClass('processing').block({
-            message: null,
-            overlayCSS: {
-                background: '#fff',
-                opacity: 0.6
+        /**
+         * Update surcharge based on payment method
+         * 
+         * @param {string} paymentMethod The selected payment method ID
+         */
+        updateSurcharge: function(paymentMethod) {
+            var self = this;
+
+            if (!paymentMethod) {
+                return;
             }
-        });
-        
-        // Update UI
-        $('.wc_payment_method').removeClass('has-surcharge');
-        $paymentMethodContainer.addClass('has-surcharge');
-        
-        $.ajax({
-            type: 'POST',
-            url: wc_payment_surcharge_params.ajax_url,
-            data: ajaxData,
-            success: function(response) {
-                // Trigger totals refresh
-                $(document.body).trigger('update_checkout');
-                
-                // For express checkout, we need to update the payment request display
-                if (expressType && typeof wc_stripe_payment_request_params !== 'undefined') {
-                    setTimeout(function() {
-                        if (typeof stripePaymentRequest !== 'undefined') {
-                            stripePaymentRequest.update({
-                                total: getUpdatedStripeTotal()
-                            });
-                        }
-                    }, 500);
-                }
-            },
-            complete: function() {
-                $paymentMethodContainer.removeClass('processing').unblock();
-                isProcessingExpressCheckout = false;
-            },
-            error: function() {
-                isProcessingExpressCheckout = false;
-            }
-        });
-    }
 
-    // Get updated total for Stripe Payment Request
-    function getUpdatedStripeTotal() {
-        var total = parseFloat($('.order-total .amount').last().text().replace(/[^\d.-]/g, ''));
-        return {
-            label: wc_stripe_payment_request_params.total_label,
-            amount: Math.round(total * 100) // Convert to cents
-        };
-    }
+            // Store the selected payment method
+            this.storePaymentMethod(paymentMethod);
 
-    // Handle payment method changes
-    $(document.body).on('change', 'input[name="payment_method"]', function() {
-        if (!isProcessingExpressCheckout) {
-            updateSurcharge($(this).val());
-        }
-    });
+            // Show loading state
+            this.showLoadingState();
 
-    // Initialize on page load
-    function initSurcharge() {
-        var initialPaymentMethod = $('input[name="payment_method"]:checked').val();
-        if (initialPaymentMethod && !$('body').hasClass('surcharge-initialized')) {
-            // Force update after a small delay
-            setTimeout(function() {
-                updateSurcharge(initialPaymentMethod);
-                $('body').addClass('surcharge-initialized');
-            }, 500);
-        }
-    }
-
-    // Handle express checkout buttons
-    function handleExpressCheckout(buttonClass, expressType) {
-        $(document.body).on('click', buttonClass, function(e) {
-            if (wc_payment_surcharge_params.stripe_express_enabled === '1') {
-                e.preventDefault();
-                updateSurcharge('stripe', expressType);
-                
-                // Re-trigger the payment request after updating surcharge
-                setTimeout(function() {
-                    if (typeof stripePaymentRequest !== 'undefined') {
-                        stripePaymentRequest.show();
-                    }
-                }, 1000);
-            }
-        });
-    }
-
-    // Initialize handlers for each express checkout type
-    handleExpressCheckout('.stripe-apple-pay-button', 'apple_pay');
-    handleExpressCheckout('.stripe-google-pay-button', 'google_pay');
-
-    // Run on document ready
-    $(function() {
-        if (!wc_payment_surcharge_params.is_pay_page) {
-            initSurcharge();
-        }
-    });
-
-    // Also run when checkout updates
-    $(document.body).on('updated_checkout', function() {
-        if (!wc_payment_surcharge_params.is_pay_page && !$('body').hasClass('surcharge-initialized')) {
-            initSurcharge();
-        }
-        
-        // Update express checkout buttons with surcharge info
-        if (wc_payment_surcharge_params.stripe_express_enabled === '1') {
-            $('.stripe-apple-pay-button, .stripe-google-pay-button').each(function() {
-                var $button = $(this);
-                var expressType = $button.hasClass('stripe-apple-pay-button') ? 'apple_pay' : 'google_pay';
-                var surcharge = $('.payment_method_stripe').data('surcharge-' + expressType);
-                
-                if (surcharge) {
-                    $button.attr('data-surcharge', surcharge);
+            // Make AJAX request to get surcharge info
+            $.ajax({
+                url: wc_payment_surcharge_params.ajax_url,
+                type: 'POST',
+                data: {
+                    action: 'get_payment_surcharge',
+                    payment_method: paymentMethod,
+                    nonce: wc_payment_surcharge_params.nonce
+                },
+                success: function(response) {
+                    self.handleSurchargeResponse(response);
+                },
+                error: function(xhr, status, error) {
+                    self.handleSurchargeError(error);
+                },
+                complete: function() {
+                    self.hideLoadingState();
+                    // Trigger checkout update to refresh totals
+                    $(document.body).trigger('update_checkout');
                 }
             });
+        },
+
+        /**
+         * Handle surcharge response from server
+         * 
+         * @param {object} response The AJAX response
+         */
+        handleSurchargeResponse: function(response) {
+            if (response.success) {
+                var data = response.data;
+                
+                // Update surcharge notice if present
+                this.updateSurchargeNotice(data);
+                
+                // Store surcharge data
+                this.storeSurchargeData(data);
+                
+                // Log surcharge info for debugging
+                if (data.amount > 0) {
+                    console.log('Payment Surcharge: ' + data.rate + '% (' + data.formatted_amount + ')');
+                }
+            } else {
+                this.handleSurchargeError(response.data.message);
+            }
+        },
+
+        /**
+         * Update surcharge notice on page
+         * 
+         * @param {object} data Surcharge data
+         */
+        updateSurchargeNotice: function(data) {
+            var noticeContainer = $('.wc-payment-surcharge-notice');
+            
+            if (data.amount > 0 && data.label) {
+                var noticeHtml = '<p><small>' +
+                    'A surcharge of ' + data.formatted_amount + ' will be applied to your order.' +
+                    '</small></p>';
+                
+                if (noticeContainer.length) {
+                    noticeContainer.html(noticeHtml).show();
+                } else {
+                    // Create notice if it doesn't exist
+                    var newNotice = $('<div class="wc-payment-surcharge-notice">' + noticeHtml + '</div>');
+                    if ($('.woocommerce-checkout-review-order').length) {
+                        newNotice.insertBefore('.woocommerce-checkout-review-order');
+                    } else if ($('.cart_totals').length) {
+                        newNotice.insertBefore('.cart_totals');
+                    }
+                }
+            } else {
+                if (noticeContainer.length) {
+                    noticeContainer.hide();
+                }
+            }
+        },
+
+        /**
+         * Show loading state
+         */
+        showLoadingState: function() {
+            $('.wc-payment-surcharge-notice').addClass('loading');
+            $('.payment-method-surcharge-loading').show();
+        },
+
+        /**
+         * Hide loading state
+         */
+        hideLoadingState: function() {
+            $('.wc-payment-surcharge-notice').removeClass('loading');
+            $('.payment-method-surcharge-loading').hide();
+        },
+
+        /**
+         * Store payment method in session
+         * 
+         * @param {string} paymentMethod Payment method ID
+         */
+        storePaymentMethod: function(paymentMethod) {
+            try {
+                sessionStorage.setItem('wc_payment_method', paymentMethod);
+            } catch (e) {
+                // Session storage not available
+            }
+        },
+
+        /**
+         * Store surcharge data
+         * 
+         * @param {object} data Surcharge data
+         */
+        storeSurchargeData: function(data) {
+            try {
+                sessionStorage.setItem('wc_surcharge_amount', data.amount);
+                sessionStorage.setItem('wc_surcharge_label', data.label);
+                sessionStorage.setItem('wc_surcharge_rate', data.rate);
+            } catch (e) {
+                // Session storage not available
+            }
+        },
+
+        /**
+         * Check surcharge status
+         */
+        checkSurchargeStatus: function() {
+            var self = this;
+            
+            // Check if we have stored payment method
+            var storedPayment = sessionStorage.getItem('wc_payment_method');
+            if (storedPayment) {
+                var currentPayment = $('input[name="payment_method"]:checked').val();
+                if (currentPayment && currentPayment !== storedPayment) {
+                    this.updateSurcharge(currentPayment);
+                }
+            }
+            
+            // Check if surcharge notice is still visible
+            var surchargeAmount = sessionStorage.getItem('wc_surcharge_amount');
+            if (surchargeAmount && parseFloat(surchargeAmount) > 0) {
+                var noticeContainer = $('.wc-payment-surcharge-notice');
+                if (noticeContainer.length && !noticeContainer.is(':visible')) {
+                    // Re-trigger update if notice disappeared
+                    $(document.body).trigger('update_checkout');
+                }
+            }
+        },
+
+        /**
+         * Handle checkout error
+         */
+        handleCheckoutError: function() {
+            // Clear stored data on error
+            this.clearStoredData();
+        },
+
+        /**
+         * Handle surcharge error
+         * 
+         * @param {string} error Error message
+         */
+        handleSurchargeError: function(error) {
+            console.warn('Payment Surcharge Error:', error);
+            
+            // Show error in notice if available
+            var noticeContainer = $('.wc-payment-surcharge-notice');
+            if (noticeContainer.length) {
+                noticeContainer.html('<p><small>Error loading surcharge information.</small></p>').show();
+            }
+        },
+
+        /**
+         * Clear stored data
+         */
+        clearStoredData: function() {
+            try {
+                sessionStorage.removeItem('wc_payment_method');
+                sessionStorage.removeItem('wc_surcharge_amount');
+                sessionStorage.removeItem('wc_surcharge_label');
+                sessionStorage.removeItem('wc_surcharge_rate');
+            } catch (e) {
+                // Session storage not available
+            }
         }
-        
-        // Unblock all payment methods after update
-        $('.wc_payment_method').removeClass('processing').unblock();
+    };
+
+    /**
+     * Initialize on document ready
+     */
+    $(document).ready(function() {
+        // Check if we're on cart or checkout page
+        if ($('.woocommerce-cart').length || $('.woocommerce-checkout').length) {
+            WCPaymentSurcharge.init();
+        }
     });
 
-    // Intercept Stripe Payment Request display to ensure surcharge is applied
-    $(document.body).on('stripe-payment-show', function() {
-        if (wc_payment_surcharge_params.stripe_express_enabled === '1') {
-            updateSurcharge('stripe', 'payment_request_api');
+    /**
+     * Re-initialize on AJAX updates
+     */
+    $(document.body).on('updated_checkout', function() {
+        // Ensure surcharge is updated after checkout refresh
+        var selectedPayment = $('input[name="payment_method"]:checked').val();
+        if (selectedPayment) {
+            WCPaymentSurcharge.updateSurcharge(selectedPayment);
         }
     });
-});
+
+    /**
+     * Handle theme-specific events
+     */
+    $(document.body).on('wc_fragments_loaded', function() {
+        // Re-initialize after fragments are loaded (for cart updates)
+        if ($('.woocommerce-cart').length) {
+            WCPaymentSurcharge.checkSurchargeStatus();
+        }
+    });
+
+})(jQuery);

@@ -2,14 +2,14 @@
 /**
  * Plugin Name: WooCommerce Payment Method Surcharge
  * Description: Adds payment method specific surcharges to WooCommerce orders.
- * Version: 2.3.4
+ * Version: 2.3.5
  * Author: Steve Zeal
  * Text Domain: wc-payment-surcharge
  * Domain Path: /languages
  * Requires at least: 5.6
  * Requires PHP: 7.4
  * WC requires at least: 6.0
- * WC tested up to: 8.0
+ * WC tested up to: 8.5
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  */
@@ -17,7 +17,7 @@
 defined('ABSPATH') || exit;
 
 // Define plugin constants
-define('WC_PAYMENT_SURCHARGE_VERSION', '2.3.2');
+define('WC_PAYMENT_SURCHARGE_VERSION', '2.3.5');
 define('WC_PAYMENT_SURCHARGE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('WC_PAYMENT_SURCHARGE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -34,8 +34,22 @@ add_action('before_woocommerce_init', function() {
     }
 });
 
-// Check if Stripe is active
-add_action('plugins_loaded', 'wc_payment_surcharge_check_stripe');
+/**
+ * Initialize the plugin only after all plugins are loaded.
+ * This ensures Stripe and its sub-gateways (like Afterpay) are registered.
+ */
+add_action('plugins_loaded', 'wc_payment_surcharge_init', 20);
+
+function wc_payment_surcharge_init() {
+    // Load the main class only once
+    if (!class_exists('WC_Payment_Surcharge')) {
+        require_once WC_PAYMENT_SURCHARGE_PLUGIN_DIR . 'includes/class-wc-payment-surcharge.php';
+    }
+    return WC_Payment_Surcharge::instance();
+}
+
+// Check if Stripe is active (for admin notice)
+add_action('plugins_loaded', 'wc_payment_surcharge_check_stripe', 10);
 function wc_payment_surcharge_check_stripe() {
     if (!class_exists('WC_Stripe')) {
         add_action('admin_notices', 'wc_payment_surcharge_stripe_missing_notice');
@@ -60,16 +74,7 @@ function wc_payment_surcharge_woocommerce_missing_notice() {
     echo '</p></div>';
 }
 
-// Include the main plugin class
-require_once WC_PAYMENT_SURCHARGE_PLUGIN_DIR . 'includes/class-wc-payment-surcharge.php';
-
-// Initialize the plugin
-function wc_payment_surcharge_init() {
-    return WC_Payment_Surcharge::instance();
-}
-add_action('plugins_loaded', 'wc_payment_surcharge_init');
-
-// Add this new function to handle the AJAX request
+// AJAX handler to fetch surcharge dynamically
 add_action('wp_ajax_get_payment_surcharge', 'wc_payment_surcharge_ajax_handler');
 add_action('wp_ajax_nopriv_get_payment_surcharge', 'wc_payment_surcharge_ajax_handler');
 
@@ -81,11 +86,18 @@ function wc_payment_surcharge_ajax_handler() {
     $instance = WC_Payment_Surcharge::instance();
     $instance->get_payment_surcharge_ajax();
 }
-// Add filter to detect Stripe express checkout
-add_filter('woocommerce_stripe_payment_request_total_label', function($label, $total) {
+
+// Filter for Stripe express checkout labels (improved display)
+add_filter('woocommerce_stripe_payment_request_total_label', 'wc_payment_surcharge_stripe_express_label', 10, 2);
+function wc_payment_surcharge_stripe_express_label($label, $total) {
     $surcharge_data = WC()->session->get('payment_surcharge_data');
-    if ($surcharge_data && $surcharge_data['is_stripe_express']) {
-        $label .= ' (' . $surcharge_data['label'] . ': ' . wc_price($surcharge_data['amount']) . ')';
+    if ($surcharge_data && isset($surcharge_data['amount']) && $surcharge_data['amount'] > 0) {
+        // Append the surcharge information to the payment button label
+        $label .= sprintf(
+            ' (%s: %s)',
+            esc_html($surcharge_data['label']),
+            wc_price($surcharge_data['amount'])
+        );
     }
     return $label;
-}, 10, 2);
+}
